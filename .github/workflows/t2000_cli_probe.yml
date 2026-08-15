@@ -13,7 +13,7 @@ jobs:
           npm install -g @t2000/cli
           t2 --version
 
-      - name: Inspect T2000 MCP
-        run: |
-          echo "Checking T2000 CLI..."
-          t2 job board
+      - name: Check T2000 open jobs
+  run: |
+    echo "Checking T2000 open jobs..."
+    t2 job board
