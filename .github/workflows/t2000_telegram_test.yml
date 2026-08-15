@@ -1,0 +1,70 @@
+name: T2000 Telegram Test
+
+on:
+  workflow_dispatch:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Install T2000 CLI
+        run: |
+          npm install -g @t2000/cli
+          t2 --version
+
+      - name: Check T2000 jobs
+        id: jobs
+        run: |
+          t2 --json job board > /tmp/jobs.json
+          cat /tmp/jobs.json
+
+      - name: Send Telegram alert
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+        run: |
+          python - <<'PY'
+          import json
+          import os
+          import urllib.parse
+          import urllib.request
+
+          data = json.load(open("/tmp/jobs.json"))
+          jobs = data.get("openJobs", [])
+
+          if not jobs:
+              print("No open jobs. No Telegram alert needed.")
+              raise SystemExit(0)
+
+          lines = [f"🚨 T2000: {len(jobs)} open job(s) found!", ""]
+
+          for job in jobs:
+              job_id = job.get("id", "unknown")
+              title = job.get("title", "Untitled")
+              payout = job.get("maxUsdc", job.get("max", "?"))
+              sla = job.get("slaMinutes", "?")
+
+              lines.append(
+                  f"• {title}\n"
+                  f"  ID: {job_id}\n"
+                  f"  Max: ${payout} USDC\n"
+                  f"  SLA: {sla} min"
+              )
+
+          message = "\n".join(lines)
+
+          url = (
+              "https://api.telegram.org/bot"
+              + os.environ["TELEGRAM_BOT_TOKEN"]
+              + "/sendMessage"
+          )
+
+          payload = urllib.parse.urlencode({
+              "chat_id": os.environ["TELEGRAM_CHAT_ID"],
+              "text": message
+          }).encode()
+
+          urllib.request.urlopen(url, data=payload).read()
+          print("Telegram alert sent.")
+          PY
