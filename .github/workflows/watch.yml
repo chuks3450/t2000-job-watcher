@@ -5,19 +5,30 @@ on:
     - cron: "*/5 * * * *"
   workflow_dispatch:
 
+permissions:
+  contents: write
+
+concurrency:
+  group: t2000-job-watcher
+  cancel-in-progress: false
+
 jobs:
   watch:
     runs-on: ubuntu-latest
 
     steps:
-      - name: Check t2000 public open jobs
+      - name: Checkout watcher state
+        uses: actions/checkout@v4
+
+      - name: Check T2000 and alert on new jobs
         shell: bash
         env:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
         run: |
           set -euo pipefail
-          echo "Checking t2000 public open jobs..."
+
+          echo "Checking T2000 public open jobs..."
           echo "Time: $(date -u)"
 
           curl --fail --silent --show-error --location \
@@ -27,35 +38,98 @@ jobs:
           python - <<'PY'
           import json
           import os
+          import subprocess
           import urllib.parse
           import urllib.request
           from pathlib import Path
 
           data = json.loads(Path('/tmp/open-jobs.json').read_text())
           jobs = data.get('openJobs', [])
+
+          state_file = Path('seen_jobs.json')
+
+          if state_file.exists():
+              seen = set(json.loads(state_file.read_text()))
+              first_run = False
+          else:
+              seen = set()
+              first_run = True
+
+          current_ids = {
+              str(job.get('id'))
+              for job in jobs
+              if job.get('id') is not None
+          }
+
+          if first_run:
+              print(f"First run: recording {len(current_ids)} existing jobs.")
+              seen.update(current_ids)
+              new_jobs = []
+          else:
+              new_jobs = [
+                  job for job in jobs
+                  if str(job.get('id')) not in seen
+              ]
+
           print(f"Open jobs found: {len(jobs)}")
+          print(f"New jobs found: {len(new_jobs)}")
 
           token = os.environ['TELEGRAM_BOT_TOKEN']
           chat_id = os.environ['TELEGRAM_CHAT_ID']
 
-          message = (
-              "🟢 WildForce Job Watcher is online!\n\n"
-              f"T2000 open jobs currently visible: {len(jobs)}\n"
-              "This is a connection test. No job has been claimed."
+          for job in new_jobs:
+              job_id = str(job.get('id', 'unknown'))
+              title = job.get('title') or 'Untitled job'
+              payout = job.get('maxUsdc')
+              sla = job.get('slaMinutes')
+
+              message = (
+                  "🚨 NEW T2000 JOB\n\n"
+                  f"Title: {title}\n"
+                  f"Payout: ${payout}\n"
+                  f"SLA: {sla} minutes\n"
+                  f"Job ID: {job_id}\n\n"
+                  "WildForce Scout detected this job. "
+                  "No claim was made."
+              )
+
+              url = f"https://api.telegram.org/bot{token}/sendMessage"
+              payload = urllib.parse.urlencode({
+                  'chat_id': chat_id,
+                  'text': message,
+              }).encode()
+
+              request = urllib.request.Request(
+                  url,
+                  data=payload,
+                  method='POST'
+              )
+
+              with urllib.request.urlopen(request, timeout=20) as response:
+                  result = json.loads(response.read().decode())
+
+              if not result.get('ok'):
+                  raise RuntimeError(f"Telegram error: {result}")
+
+              seen.add(job_id)
+
+          state_file.write_text(
+              json.dumps(sorted(seen), indent=2) + "\n"
           )
 
-          url = f"https://api.telegram.org/bot{token}/sendMessage"
-          payload = urllib.parse.urlencode({
-              'chat_id': chat_id,
-              'text': message,
-          }).encode()
-
-          request = urllib.request.Request(url, data=payload, method='POST')
-          with urllib.request.urlopen(request, timeout=20) as response:
-              result = json.loads(response.read().decode())
-
-          if not result.get('ok'):
-              raise RuntimeError(f"Telegram API error: {result}")
-
-          print("Telegram test notification sent successfully.")
           PY
+
+      - name: Save seen job IDs
+        shell: bash
+        run: |
+          git config user.name "WildForce Scout"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+          git add seen_jobs.json
+
+          if git diff --cached --quiet; then
+            echo "No state changes to commit."
+          else
+            git commit -m "Update seen T2000 jobs"
+            git push
+          fi
