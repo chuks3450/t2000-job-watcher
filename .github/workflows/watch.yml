@@ -12,6 +12,9 @@ jobs:
     steps:
       - name: Check t2000 public open jobs
         shell: bash
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
         run: |
           set -euo pipefail
           echo "Checking t2000 public open jobs..."
@@ -23,15 +26,36 @@ jobs:
 
           python - <<'PY'
           import json
+          import os
+          import urllib.parse
+          import urllib.request
           from pathlib import Path
 
           data = json.loads(Path('/tmp/open-jobs.json').read_text())
           jobs = data.get('openJobs', [])
           print(f"Open jobs found: {len(jobs)}")
 
-          for job in jobs:
-              print(
-                  f"- {job.get('id')} | ${job.get('maxUsdc')} | "
-                  f"{job.get('title')} | SLA {job.get('slaMinutes')} min"
-              )
+          token = os.environ['TELEGRAM_BOT_TOKEN']
+          chat_id = os.environ['TELEGRAM_CHAT_ID']
+
+          message = (
+              "🟢 WildForce Job Watcher is online!\n\n"
+              f"T2000 open jobs currently visible: {len(jobs)}\n"
+              "This is a connection test. No job has been claimed."
+          )
+
+          url = f"https://api.telegram.org/bot{token}/sendMessage"
+          payload = urllib.parse.urlencode({
+              'chat_id': chat_id,
+              'text': message,
+          }).encode()
+
+          request = urllib.request.Request(url, data=payload, method='POST')
+          with urllib.request.urlopen(request, timeout=20) as response:
+              result = json.loads(response.read().decode())
+
+          if not result.get('ok'):
+              raise RuntimeError(f"Telegram API error: {result}")
+
+          print("Telegram test notification sent successfully.")
           PY
