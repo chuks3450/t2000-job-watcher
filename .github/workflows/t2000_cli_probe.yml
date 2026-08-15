@@ -16,4 +16,4 @@ jobs:
       - name: Inspect T2000 MCP
         run: |
           echo "Checking T2000 CLI..."
-          t2 mcp --help
+          t2 --help
