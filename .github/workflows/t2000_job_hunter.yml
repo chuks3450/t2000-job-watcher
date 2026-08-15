@@ -5,6 +5,10 @@ on:
     - cron: "*/5 * * * *"
   workflow_dispatch:
 
+concurrency:
+  group: t2000-job-hunter
+  cancel-in-progress: false
+
 jobs:
   hunt:
     runs-on: ubuntu-latest
@@ -19,7 +23,7 @@ jobs:
         uses: actions/cache/restore@v4
         with:
           path: /tmp/t2000-seen.txt
-          key: t2000-seen-${{ github.run_id }}
+          key: t2000-seen-${{ github.run_number }}
           restore-keys: |
             t2000-seen-
 
@@ -34,7 +38,8 @@ jobs:
           echo "Current T2000 board:"
           cat /tmp/jobs.json
 
-      - name: Alert on new jobs
+      - name: Find and auto-claim qualifying jobs
+        id: claim
         env:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
@@ -42,8 +47,12 @@ jobs:
           python - <<'PY'
           import json
           import os
+          import subprocess
           import urllib.parse
           import urllib.request
+
+          MIN_PAYOUT = 0.05
+          MIN_SLA = 30
 
           data = json.load(open("/tmp/jobs.json"))
           jobs = data.get("openJobs", [])
@@ -64,32 +73,7 @@ jobs:
           print(f"Open jobs: {len(jobs)}")
           print(f"New jobs: {len(new_jobs)}")
 
-          if not new_jobs:
-              print("No new jobs. No Telegram alert needed.")
-          else:
-              lines = [
-                  f"🚨 T2000: {len(new_jobs)} NEW JOB(S)",
-                  ""
-              ]
-
-              for job in new_jobs:
-                  job_id = job.get("id", "unknown")
-                  title = job.get("title", "Untitled")
-                  payout = job.get("maxUsdc", "?")
-                  sla = job.get("slaMinutes", "?")
-
-                  lines.append(
-                      f"• {title}\n"
-                      f"  ID: {job_id}\n"
-                      f"  Max: ${payout} USDC\n"
-                      f"  SLA: {sla} min\n"
-                  )
-
-                  with open(seen_file, "a") as f:
-                      f.write(str(job_id) + "\n")
-
-              message = "\n".join(lines)
-
+          def telegram(message):
               url = (
                   "https://api.telegram.org/bot"
                   + os.environ["TELEGRAM_BOT_TOKEN"]
@@ -103,10 +87,101 @@ jobs:
 
               urllib.request.urlopen(url, data=payload).read()
 
-              print("Telegram alert sent.")
+          for job in new_jobs:
+
+              job_id = str(job.get("id", "")).strip()
+              title = job.get("title", "Untitled")
+
+              try:
+                  payout = float(job.get("maxUsdc", 0))
+              except (TypeError, ValueError):
+                  payout = 0
+
+              try:
+                  sla = float(job.get("slaMinutes", 0))
+              except (TypeError, ValueError):
+                  sla = 0
+
+              print("")
+              print("================================")
+              print(f"Job: {title}")
+              print(f"ID: {job_id}")
+              print(f"Payout: ${payout:.2f}")
+              print(f"SLA: {sla:.0f} minutes")
+              print("================================")
+
+              qualifies = (
+                  payout >= MIN_PAYOUT
+                  and sla >= MIN_SLA
+              )
+
+              if not qualifies:
+                  print("SKIP: Job does not meet minimum rules.")
+
+                  telegram(
+                      f"🔴 T2000 JOB SKIPPED\n\n"
+                      f"Title: {title}\n"
+                      f"Payout: ${payout:.2f}\n"
+                      f"SLA: {sla:.0f} minutes\n"
+                      f"Job ID: {job_id}\n\n"
+                      f"WildForce Scout skipped this job."
+                  )
+
+                  with open(seen_file, "a") as f:
+                      f.write(job_id + "\n")
+
+                  continue
+
+              print("QUALIFIES: Attempting automatic claim...")
+
+              result = subprocess.run(
+                  ["t2", "job", "claim", job_id],
+                  text=True,
+                  capture_output=True
+              )
+
+              print("Claim stdout:")
+              print(result.stdout)
+
+              print("Claim stderr:")
+              print(result.stderr)
+
+              if result.returncode == 0:
+                  print("CLAIM SUCCESSFUL")
+
+                  telegram(
+                      f"🟢 T2000 JOB CLAIMED\n\n"
+                      f"Title: {title}\n"
+                      f"Payout: ${payout:.2f} USDC\n"
+                      f"SLA: {sla:.0f} minutes\n"
+                      f"Job ID: {job_id}\n\n"
+                      f"WildForce Scout claimed this automatically."
+                  )
+
+              else:
+                  print("CLAIM FAILED")
+
+                  error = (result.stderr or result.stdout).strip()
+
+                  telegram(
+                      f"⚠️ T2000 CLAIM FAILED\n\n"
+                      f"Title: {title}\n"
+                      f"Payout: ${payout:.2f} USDC\n"
+                      f"SLA: {sla:.0f} minutes\n"
+                      f"Job ID: {job_id}\n\n"
+                      f"Error:\n{error[:1000]}"
+                  )
+
+              with open(seen_file, "a") as f:
+                  f.write(job_id + "\n")
+
+          if not new_jobs:
+              print("No new jobs.")
+
+          PY
 
       - name: Save seen jobs
         uses: actions/cache/save@v4
         with:
           path: /tmp/t2000-seen.txt
-          key: t2000-seen-${{ github.run_id }}
+          key: t2000-seen-${{ github.run_number }}
