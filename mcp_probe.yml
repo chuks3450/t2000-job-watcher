@@ -1,0 +1,38 @@
+name: T2000 MCP Probe
+
+on:
+  workflow_dispatch:
+
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Inspect T2000 MCP tools
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          echo "Querying T2000 MCP tools/list..."
+
+          curl --fail-with-body \
+            --silent \
+            --show-error \
+            --location \
+            -X POST \
+            "https://mcp.t2000.ai/mcp" \
+            -H "Content-Type: application/json" \
+            -H "Accept: application/json, text/event-stream" \
+            --data '{
+              "jsonrpc":"2.0",
+              "id":1,
+              "method":"tools/list",
+              "params":{}
+            }' \
+            | tee /tmp/t2000-mcp-tools.txt
+
+          echo
+          echo "=== Searching for t2000_job_board ==="
+
+          grep -o '.\{0,500\}t2000_job_board.\{0,1500\}' \
+            /tmp/t2000-mcp-tools.txt || true
