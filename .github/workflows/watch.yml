@@ -1,0 +1,27 @@
+name: t2000 Job Watcher
+
+on:
+  schedule:
+    - cron: "*/5 * * * *"
+  workflow_dispatch:
+
+jobs:
+  watch:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Check t2000 job board
+        run: |
+          echo "Checking t2000 for new jobs..."
+          echo "Time: $(date -u)"
+
+          # Read-only watcher for now.
+          # We will connect the real t2000 job-board API/CLI
+          # after confirming the correct public interface.
+          curl -sL https://t2000.ai/ > /tmp/t2000.html
+
+          if grep -qi "job" /tmp/t2000.html; then
+            echo "t2000 job marketplace is reachable."
+          else
+            echo "t2000 marketplace check completed."
+          fi
