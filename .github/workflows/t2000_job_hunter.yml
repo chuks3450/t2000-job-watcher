@@ -1,0 +1,112 @@
+name: T2000 Job Hunter
+
+on:
+  schedule:
+    - cron: "*/5 * * * *"
+  workflow_dispatch:
+
+jobs:
+  hunt:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Install T2000 CLI
+        run: |
+          npm install -g @t2000/cli
+          t2 --version
+
+      - name: Restore seen jobs
+        uses: actions/cache/restore@v4
+        with:
+          path: /tmp/t2000-seen.txt
+          key: t2000-seen-${{ github.run_id }}
+          restore-keys: |
+            t2000-seen-
+
+      - name: Check T2000 jobs
+        run: |
+          if [ ! -f /tmp/t2000-seen.txt ]; then
+            touch /tmp/t2000-seen.txt
+          fi
+
+          t2 --json job board > /tmp/jobs.json
+
+          echo "Current T2000 board:"
+          cat /tmp/jobs.json
+
+      - name: Alert on new jobs
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+        run: |
+          python - <<'PY'
+          import json
+          import os
+          import urllib.parse
+          import urllib.request
+
+          data = json.load(open("/tmp/jobs.json"))
+          jobs = data.get("openJobs", [])
+
+          seen_file = "/tmp/t2000-seen.txt"
+
+          with open(seen_file, "r") as f:
+              seen = set(x.strip() for x in f if x.strip())
+
+          new_jobs = []
+
+          for job in jobs:
+              job_id = str(job.get("id", "")).strip()
+
+              if job_id and job_id not in seen:
+                  new_jobs.append(job)
+
+          print(f"Open jobs: {len(jobs)}")
+          print(f"New jobs: {len(new_jobs)}")
+
+          if not new_jobs:
+              print("No new jobs. No Telegram alert needed.")
+          else:
+              lines = [
+                  f"🚨 T2000: {len(new_jobs)} NEW JOB(S)",
+                  ""
+              ]
+
+              for job in new_jobs:
+                  job_id = job.get("id", "unknown")
+                  title = job.get("title", "Untitled")
+                  payout = job.get("maxUsdc", "?")
+                  sla = job.get("slaMinutes", "?")
+
+                  lines.append(
+                      f"• {title}\n"
+                      f"  ID: {job_id}\n"
+                      f"  Max: ${payout} USDC\n"
+                      f"  SLA: {sla} min\n"
+                  )
+
+                  with open(seen_file, "a") as f:
+                      f.write(str(job_id) + "\n")
+
+              message = "\n".join(lines)
+
+              url = (
+                  "https://api.telegram.org/bot"
+                  + os.environ["TELEGRAM_BOT_TOKEN"]
+                  + "/sendMessage"
+              )
+
+              payload = urllib.parse.urlencode({
+                  "chat_id": os.environ["TELEGRAM_CHAT_ID"],
+                  "text": message
+              }).encode()
+
+              urllib.request.urlopen(url, data=payload).read()
+
+              print("Telegram alert sent.")
+
+      - name: Save seen jobs
+        uses: actions/cache/save@v4
+        with:
+          path: /tmp/t2000-seen.txt
+          key: t2000-seen-${{ github.run_id }}
