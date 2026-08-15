@@ -1,0 +1,19 @@
+name: T2000 CLI Probe
+
+on:
+  workflow_dispatch:
+
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Install T2000 CLI
+        run: |
+          npm install -g @t2000/cli
+          t2 --version
+
+      - name: Inspect T2000 MCP
+        run: |
+          echo "Checking T2000 CLI..."
+          t2 mcp --help
