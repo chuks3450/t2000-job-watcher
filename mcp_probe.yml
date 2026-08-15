@@ -11,11 +11,12 @@ jobs:
       - name: Inspect T2000 MCP tools
         shell: bash
         run: |
-          set -euo pipefail
+          set -u
 
           echo "Querying T2000 MCP tools/list..."
+          echo
 
-          curl --fail-with-body \
+          curl \
             --silent \
             --show-error \
             --location \
@@ -29,10 +30,12 @@ jobs:
               "method":"tools/list",
               "params":{}
             }' \
-            | tee /tmp/t2000-mcp-tools.txt
+            -w "\n\nHTTP STATUS: %{http_code}\n" \
+            -o /tmp/t2000-response.txt
+
+          echo "=== T2000 RESPONSE ==="
+          cat /tmp/t2000-response.txt
 
           echo
-          echo "=== Searching for t2000_job_board ==="
-
-          grep -o '.\{0,500\}t2000_job_board.\{0,1500\}' \
-            /tmp/t2000-mcp-tools.txt || true
+          echo "=== SEARCHING FOR JOB BOARD ==="
+          grep -o 't2000_job_board' /tmp/t2000-response.txt || true
