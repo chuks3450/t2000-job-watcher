@@ -16,4 +16,4 @@ jobs:
       - name: Check T2000 open jobs
         run: |
           echo "Checking T2000 open jobs..."
-          t2 job board
+          t2 --json job board
