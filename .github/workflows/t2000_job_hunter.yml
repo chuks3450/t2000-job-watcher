@@ -2,7 +2,7 @@ name: T2000 Job Hunter
 
 on:
   schedule:
-    - cron: "*/5 * * * *"
+    - cron: "* * * * *"
   workflow_dispatch:
 
 concurrency:
