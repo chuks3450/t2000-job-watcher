@@ -51,6 +51,8 @@ jobs:
           import urllib.parse
           import urllib.request
 
+          # Temporary basic screening rules.
+          # These are NOT the full Claude job-worthiness criteria yet.
           MIN_PAYOUT = 0.05
           MIN_SLA = 30
 
@@ -115,16 +117,21 @@ jobs:
                   and sla >= MIN_SLA
               )
 
+              # -------------------------------------------------
+              # JOB DOES NOT PASS BASIC SCREENING
+              # -------------------------------------------------
               if not qualifies:
-                  print("SKIP: Job does not meet minimum rules.")
+                  print("CHECK: Job does not meet basic screening rules.")
 
                   telegram(
-                      f"🔴 T2000 JOB SKIPPED\n\n"
+                      f"👀 T2000 JOB DETECTED\n\n"
                       f"Title: {title}\n"
-                      f"Payout: ${payout:.2f}\n"
+                      f"Payout: ${payout:.2f} USDC\n"
                       f"SLA: {sla:.0f} minutes\n"
                       f"Job ID: {job_id}\n\n"
-                      f"WildForce Scout skipped this job."
+                      f"⚠️ This job doesn't meet our basic criteria,\n"
+                      f"but it may be worth checking.\n\n"
+                      f"WildForce Scout detected this job."
                   )
 
                   with open(seen_file, "a") as f:
@@ -132,7 +139,21 @@ jobs:
 
                   continue
 
+              # -------------------------------------------------
+              # JOB PASSES BASIC SCREENING
+              # -------------------------------------------------
               print("QUALIFIES: Attempting automatic claim...")
+
+              telegram(
+                  f"🚨 T2000 JOB MATCH\n\n"
+                  f"Title: {title}\n"
+                  f"Payout: ${payout:.2f} USDC\n"
+                  f"SLA: {sla:.0f} minutes\n"
+                  f"Job ID: {job_id}\n\n"
+                  f"✅ Passed our basic screening.\n"
+                  f"⚡ Attempting to claim immediately.\n\n"
+                  f"WildForce Scout"
+              )
 
               result = subprocess.run(
                   ["t2", "job", "claim", job_id],
@@ -146,6 +167,9 @@ jobs:
               print("Claim stderr:")
               print(result.stderr)
 
+              # -------------------------------------------------
+              # CLAIM SUCCESSFUL
+              # -------------------------------------------------
               if result.returncode == 0:
                   print("CLAIM SUCCESSFUL")
 
@@ -155,23 +179,36 @@ jobs:
                       f"Payout: ${payout:.2f} USDC\n"
                       f"SLA: {sla:.0f} minutes\n"
                       f"Job ID: {job_id}\n\n"
-                      f"WildForce Scout claimed this automatically."
+                      f"✅ Passed our basic screening.\n"
+                      f"⚡ WildForce Scout claimed it automatically.\n\n"
+                      f"⛔ No work has been executed yet."
                   )
 
+              # -------------------------------------------------
+              # CLAIM FAILED
+              # -------------------------------------------------
               else:
                   print("CLAIM FAILED")
 
                   error = (result.stderr or result.stdout).strip()
 
+                  if not error:
+                      error = "Unknown claim error."
+
                   telegram(
-                      f"⚠️ T2000 CLAIM FAILED\n\n"
+                      f"⚠️ T2000 AUTO-CLAIM FAILED\n\n"
                       f"Title: {title}\n"
                       f"Payout: ${payout:.2f} USDC\n"
                       f"SLA: {sla:.0f} minutes\n"
                       f"Job ID: {job_id}\n\n"
-                      f"Error:\n{error[:1000]}"
+                      f"❌ The job passed basic screening,\n"
+                      f"but the automatic claim failed.\n\n"
+                      f"Error:\n"
+                      f"{error[:1000]}"
                   )
 
+              # Mark the job as seen so we don't repeatedly alert
+              # about the same listing.
               with open(seen_file, "a") as f:
                   f.write(job_id + "\n")
 
