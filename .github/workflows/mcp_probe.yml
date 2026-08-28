@@ -13,7 +13,7 @@ jobs:
 
       - name: Test Claude Code through AgentRouter
         env:
-          ANTHROPIC_BASE_URL: https://agentrouter.org/
+          ANTHROPIC_BASE_URL: https://co.agentrouter.org
           ANTHROPIC_AUTH_TOKEN: ${{ secrets.AGENTROUTER_API_KEY }}
           ANTHROPIC_API_KEY: ${{ secrets.AGENTROUTER_API_KEY }}
           ANTHROPIC_MODEL: claude-opus-4-8
