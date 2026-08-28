@@ -1,48 +1,35 @@
-name: T2000 MCP Probe
+name: AgentRouter API Test
 
 on:
   workflow_dispatch:
 
 jobs:
-  probe:
+  test:
     runs-on: ubuntu-latest
 
     steps:
-      - name: Inspect authenticated T2000 MCP tools
-        shell: bash
+      - name: Test AgentRouter
         env:
-          T2000_MCP_TOKEN: ${{ secrets.T2000_MCP_TOKEN }}
+          AGENTROUTER_API_KEY: ${{ secrets.AGENTROUTER_API_KEY }}
         run: |
           set -euo pipefail
 
-          if [ -z "${T2000_MCP_TOKEN:-}" ]; then
-            echo "T2000_MCP_TOKEN secret is missing"
-            exit 1
-          fi
+          echo "Testing AgentRouter API..."
 
-          echo "Querying authenticated T2000 MCP tools..."
-
-          curl --fail-with-body \
-            --silent \
-            --show-error \
-            --location \
-            -X POST \
-            "https://mcp.t2000.ai/mcp" \
+          response=$(curl -sS \
+            -w "\nHTTP_STATUS:%{http_code}" \
+            https://co.agentrouter.org/v1/chat/completions \
             -H "Content-Type: application/json" \
-            -H "Accept: application/json, text/event-stream" \
-            -H "Authorization: Bearer ${T2000_MCP_TOKEN}" \
-            --data '{
-              "jsonrpc":"2.0",
-              "id":1,
-              "method":"tools/list",
-              "params":{}
-            }' \
-            | tee /tmp/t2000-mcp-tools.txt
+            -H "Authorization: Bearer ${AGENTROUTER_API_KEY}" \
+            -d '{
+              "model": "claude-opus-4-8",
+              "messages": [
+                {
+                  "role": "user",
+                  "content": "Reply with exactly: AGENTROUTER_OK"
+                }
+              ],
+              "max_tokens": 20
+            }')
 
-          echo
-          echo "=== Checking for job-board and job-claim tools ==="
-
-          grep -o 't2000_job_[A-Za-z0-9_]*' /tmp/t2000-mcp-tools.txt | sort -u || true
-
-          echo
-          echo "=== Probe complete: no transaction or job claim was requested ==="
+          echo "$response"
