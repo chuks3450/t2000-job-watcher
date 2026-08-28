@@ -8,12 +8,19 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      - name: Inspect T2000 MCP tools
+      - name: Inspect authenticated T2000 MCP tools
         shell: bash
+        env:
+          T2000_MCP_TOKEN: ${{ secrets.T2000_MCP_TOKEN }}
         run: |
           set -euo pipefail
 
-          echo "Querying T2000 MCP tools/list..."
+          if [ -z "${T2000_MCP_TOKEN:-}" ]; then
+            echo "T2000_MCP_TOKEN secret is missing"
+            exit 1
+          fi
+
+          echo "Querying authenticated T2000 MCP tools..."
 
           curl --fail-with-body \
             --silent \
@@ -23,6 +30,7 @@ jobs:
             "https://mcp.t2000.ai/mcp" \
             -H "Content-Type: application/json" \
             -H "Accept: application/json, text/event-stream" \
+            -H "Authorization: Bearer ${T2000_MCP_TOKEN}" \
             --data '{
               "jsonrpc":"2.0",
               "id":1,
@@ -32,7 +40,9 @@ jobs:
             | tee /tmp/t2000-mcp-tools.txt
 
           echo
-          echo "=== Searching for t2000_job_board ==="
+          echo "=== Checking for job-board and job-claim tools ==="
 
-          grep -o '.\{0,500\}t2000_job_board.\{0,1500\}' \
-            /tmp/t2000-mcp-tools.txt || true
+          grep -o 't2000_job_[A-Za-z0-9_]*' /tmp/t2000-mcp-tools.txt | sort -u || true
+
+          echo
+          echo "=== Probe complete: no transaction or job claim was requested ==="
