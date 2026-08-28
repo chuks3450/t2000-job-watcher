@@ -8,28 +8,29 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      - name: Test AgentRouter
+      - name: Test AgentRouter Claude API
         env:
           AGENTROUTER_API_KEY: ${{ secrets.AGENTROUTER_API_KEY }}
         run: |
           set -euo pipefail
 
-          echo "Testing AgentRouter API..."
+          echo "Testing AgentRouter Anthropic API..."
 
           response=$(curl -sS \
             -w "\nHTTP_STATUS:%{http_code}" \
-            https://co.agentrouter.org/v1/chat/completions \
+            https://co.agentrouter.org/v1/messages \
             -H "Content-Type: application/json" \
-            -H "Authorization: Bearer ${AGENTROUTER_API_KEY}" \
+            -H "x-api-key: ${AGENTROUTER_API_KEY}" \
+            -H "anthropic-version: 2023-06-01" \
             -d '{
               "model": "claude-opus-4-8",
+              "max_tokens": 20,
               "messages": [
                 {
                   "role": "user",
                   "content": "Reply with exactly: AGENTROUTER_OK"
                 }
-              ],
-              "max_tokens": 20
+              ]
             }')
 
           echo "$response"
