@@ -1,4 +1,4 @@
-name: AgentRouter API Test
+name: AgentRouter Claude Code Test
 
 on:
   workflow_dispatch:
@@ -8,29 +8,20 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      - name: Test AgentRouter Claude API
+      - name: Install Claude Code
+        run: npm install -g @anthropic-ai/claude-code
+
+      - name: Test Claude Code through AgentRouter
         env:
-          AGENTROUTER_API_KEY: ${{ secrets.AGENTROUTER_API_KEY }}
+          ANTHROPIC_BASE_URL: https://agentrouter.org/
+          ANTHROPIC_AUTH_TOKEN: ${{ secrets.AGENTROUTER_API_KEY }}
+          ANTHROPIC_API_KEY: ${{ secrets.AGENTROUTER_API_KEY }}
+          ANTHROPIC_MODEL: claude-opus-4-8
         run: |
           set -euo pipefail
 
-          echo "Testing AgentRouter Anthropic API..."
+          echo "Testing Claude Code through AgentRouter..."
 
-          response=$(curl -sS \
-            -w "\nHTTP_STATUS:%{http_code}" \
-            https://co.agentrouter.org/v1/messages \
-            -H "Content-Type: application/json" \
-            -H "x-api-key: ${AGENTROUTER_API_KEY}" \
-            -H "anthropic-version: 2023-06-01" \
-            -d '{
-              "model": "claude-opus-4-8",
-              "max_tokens": 20,
-              "messages": [
-                {
-                  "role": "user",
-                  "content": "Reply with exactly: AGENTROUTER_OK"
-                }
-              ]
-            }')
-
-          echo "$response"
+          claude -p "Reply with exactly: AGENTROUTER_OK" \
+            --model claude-opus-4-8 \
+            --output-format text
