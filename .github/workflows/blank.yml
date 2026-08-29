@@ -1,0 +1,30 @@
+ name: T2000 Automation CLI Check
+
+on:
+  workflow_dispatch:
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Install T2000 CLI
+        run: npm install -g @t2000/cli
+
+      - name: Check CLI
+        run: |
+          set -euo pipefail
+          echo "T2000 CLI version:"
+          t2 --version
+
+          echo
+          echo "T2000 init help:"
+          t2 init --help
+
+          echo
+          echo "T2000 limit help:"
+          t2 limit --help
+
+          echo
+          echo "T2000 agent help:"
+          t2 agent --help || true
