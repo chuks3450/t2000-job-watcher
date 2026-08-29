@@ -53,13 +53,13 @@ jobs:
       # ---------------------------------------------------------
       # 3. Restore previously seen jobs
       # ---------------------------------------------------------
-      - name: Restore seen jobs
+      - name: Restore ChuksBlades seen jobs
         uses: actions/cache/restore@v4
         with:
           path: /tmp/t2000-seen.txt
-          key: t2000-seen-${{ github.run_id }}
+          key: chuksblades-seen-${{ github.run_id }}
           restore-keys: |
-            t2000-seen-
+            chuksblades-seen-
 
       # ---------------------------------------------------------
       # 4. Check the live T2000 board
@@ -642,11 +642,11 @@ jobs:
       # ---------------------------------------------------------
       # 6. Save seen-job state
       # ---------------------------------------------------------
-      - name: Save seen jobs
+      - name: Save ChuksBlades seen jobs
         uses: actions/cache/save@v4
         with:
           path: /tmp/t2000-seen.txt
-          key: t2000-seen-${{ github.run_id }}
+          key: chuksblades-seen-${{ github.run_id }}
 
       # ---------------------------------------------------------
       # 7. Remove wallet from temporary GitHub runner
