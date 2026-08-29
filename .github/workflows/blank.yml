@@ -1,4 +1,4 @@
- name: T2000 Automation CLI Check
+name: T2000 Automation CLI Check
 
 on:
   workflow_dispatch:
@@ -14,6 +14,7 @@ jobs:
       - name: Check CLI
         run: |
           set -euo pipefail
+
           echo "T2000 CLI version:"
           t2 --version
 
