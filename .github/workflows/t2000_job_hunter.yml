@@ -14,36 +14,92 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
+      # ---------------------------------------------------------
+      # 1. Install T2000 CLI
+      # ---------------------------------------------------------
       - name: Install T2000 CLI
         run: |
+          set -euo pipefail
+
           npm install -g @t2000/cli
+
+          echo "T2000 CLI version:"
           t2 --version
 
+      # ---------------------------------------------------------
+      # 2. Restore ChuksBlades wallet
+      # ---------------------------------------------------------
+      - name: Restore ChuksBlades wallet
+        env:
+          T2000_WALLET_KEY: ${{ secrets.T2000_WALLET_KEY }}
+        run: |
+          set -euo pipefail
+
+          if [ -z "${T2000_WALLET_KEY:-}" ]; then
+            echo "ERROR: T2000_WALLET_KEY secret is missing."
+            exit 1
+          fi
+
+          mkdir -p "$HOME/.t2000"
+
+          umask 077
+          printf '%s' "$T2000_WALLET_KEY" > "$HOME/.t2000/wallet.key"
+
+          chmod 600 "$HOME/.t2000/wallet.key"
+
+          echo "ChuksBlades wallet restored."
+          ls -l "$HOME/.t2000/wallet.key"
+
+      # ---------------------------------------------------------
+      # 3. Restore previously seen jobs
+      # ---------------------------------------------------------
       - name: Restore seen jobs
         uses: actions/cache/restore@v4
         with:
           path: /tmp/t2000-seen.txt
-          key: t2000-seen-${{ github.run_number }}
+          key: t2000-seen-${{ github.run_id }}
           restore-keys: |
             t2000-seen-
 
+      # ---------------------------------------------------------
+      # 4. Check the live T2000 board
+      # ---------------------------------------------------------
       - name: Check T2000 jobs
         run: |
+          set -euo pipefail
+
           if [ ! -f /tmp/t2000-seen.txt ]; then
             touch /tmp/t2000-seen.txt
           fi
 
-          t2 --json job board > /tmp/jobs.json
+          t2 --json job board \
+            --key "$HOME/.t2000/wallet.key" \
+            > /tmp/jobs.json
 
-          echo "Current T2000 board:"
-          cat /tmp/jobs.json
+          echo "T2000 board checked successfully."
 
+          python - <<'PY'
+          import json
+
+          with open("/tmp/jobs.json", "r") as f:
+              data = json.load(f)
+
+          jobs = data.get("openJobs", [])
+
+          print(f"Open jobs on board: {len(jobs)}")
+          PY
+
+      # ---------------------------------------------------------
+      # 5. Screen and automatically claim jobs
+      # ---------------------------------------------------------
       - name: Find and auto-claim qualifying jobs
         id: claim
         env:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
         run: |
+          set -euo pipefail
+
           python - <<'PY'
           import json
           import os
@@ -51,87 +107,299 @@ jobs:
           import urllib.parse
           import urllib.request
 
-          # Temporary basic screening rules.
-          # These are NOT the full Claude job-worthiness criteria yet.
-          MIN_PAYOUT = 0.05
-          MIN_SLA = 30
+          # =====================================================
+          # CHUKSBLADES HUNTER SETTINGS
+          # =====================================================
 
-          data = json.load(open("/tmp/jobs.json"))
+          # Minimum acceptable payout.
+          MIN_PAYOUT = 0.05
+
+          # Avoid extremely short jobs where there is little
+          # realistic time to understand and complete the work.
+          MIN_SLA_MINUTES = 30
+
+          # Our own anti-greed limit.
+          #
+          # Even when T2000 allows 20 or 40 claims, ChuksBlades
+          # will take at most this many NEW jobs in one workflow.
+          MAX_NEW_CLAIMS_PER_RUN = 3
+
+          # Never automatically claim these known desk/proof/
+          # engagement-style bounties.
+          EXCLUDED_PHRASES = [
+              "refer a new agent",
+              "seller path",
+              "job loop",
+              "social comment",
+              "metrics",
+              "pack",
+              "board pulse",
+              "connect smoke",
+              "honest friction",
+              "storefront",
+              "skills",
+              "complete one full buyer loop",
+              "buyer loop",
+          ]
+
+          # =====================================================
+          # LOAD BOARD
+          # =====================================================
+
+          with open("/tmp/jobs.json", "r") as f:
+              data = json.load(f)
+
           jobs = data.get("openJobs", [])
 
           seen_file = "/tmp/t2000-seen.txt"
 
           with open(seen_file, "r") as f:
-              seen = set(x.strip() for x in f if x.strip())
+              seen = {
+                  line.strip()
+                  for line in f
+                  if line.strip()
+              }
 
-          new_jobs = []
-
-          for job in jobs:
-              job_id = str(job.get("id", "")).strip()
-
-              if job_id and job_id not in seen:
-                  new_jobs.append(job)
-
-          print(f"Open jobs: {len(jobs)}")
-          print(f"New jobs: {len(new_jobs)}")
+          # =====================================================
+          # TELEGRAM
+          # =====================================================
 
           def telegram(message):
+              token = os.environ.get("TELEGRAM_BOT_TOKEN")
+              chat_id = os.environ.get("TELEGRAM_CHAT_ID")
+
+              if not token or not chat_id:
+                  print("Telegram secrets are not configured.")
+                  return
+
               url = (
                   "https://api.telegram.org/bot"
-                  + os.environ["TELEGRAM_BOT_TOKEN"]
+                  + token
                   + "/sendMessage"
               )
 
               payload = urllib.parse.urlencode({
-                  "chat_id": os.environ["TELEGRAM_CHAT_ID"],
+                  "chat_id": chat_id,
                   "text": message
               }).encode()
 
-              urllib.request.urlopen(url, data=payload).read()
+              try:
+                  urllib.request.urlopen(
+                      url,
+                      data=payload,
+                      timeout=15
+                  ).read()
+              except Exception as exc:
+                  print(
+                      "Telegram notification failed:",
+                      str(exc)
+                  )
+
+          # =====================================================
+          # HELPERS
+          # =====================================================
+
+          def first_value(job, *keys, default=None):
+              for key in keys:
+                  if key in job and job[key] is not None:
+                      return job[key]
+              return default
+
+          def as_float(value, default=0.0):
+              try:
+                  return float(value)
+              except (TypeError, ValueError):
+                  return default
+
+          def as_int(value, default=0):
+              try:
+                  return int(float(value))
+              except (TypeError, ValueError):
+                  return default
+
+          def job_text(job):
+              pieces = []
+
+              for key in [
+                  "title",
+                  "need",
+                  "description",
+                  "brief",
+                  "preview"
+              ]:
+                  value = job.get(key)
+
+                  if value is not None:
+                      pieces.append(str(value))
+
+              return " ".join(pieces).lower()
+
+          # =====================================================
+          # FIND NEW JOBS
+          # =====================================================
+
+          new_jobs = []
+
+          for job in jobs:
+              job_id = str(
+                  first_value(
+                      job,
+                      "id",
+                      "openingId",
+                      "openingID",
+                      default=""
+                  )
+              ).strip()
+
+              if not job_id:
+                  continue
+
+              if job_id not in seen:
+                  new_jobs.append(job)
+
+          print(f"Open jobs: {len(jobs)}")
+          print(f"New unseen jobs: {len(new_jobs)}")
+
+          # =====================================================
+          # PROCESS JOBS
+          # =====================================================
+
+          successful_claims = 0
 
           for job in new_jobs:
 
-              job_id = str(job.get("id", "")).strip()
-              title = job.get("title", "Untitled")
+              # Stop once our own workload limit is reached.
+              if successful_claims >= MAX_NEW_CLAIMS_PER_RUN:
+                  print(
+                      "Our claim limit for this run has been "
+                      "reached."
+                  )
+                  break
 
-              try:
-                  payout = float(job.get("maxUsdc", 0))
-              except (TypeError, ValueError):
-                  payout = 0
+              job_id = str(
+                  first_value(
+                      job,
+                      "id",
+                      "openingId",
+                      "openingID",
+                      default=""
+                  )
+              ).strip()
 
-              try:
-                  sla = float(job.get("slaMinutes", 0))
-              except (TypeError, ValueError):
-                  sla = 0
+              title = str(
+                  first_value(
+                      job,
+                      "title",
+                      default="Untitled job"
+                  )
+              ).strip()
 
-              print("")
-              print("================================")
-              print(f"Job: {title}")
-              print(f"ID: {job_id}")
-              print(f"Payout: ${payout:.2f}")
-              print(f"SLA: {sla:.0f} minutes")
-              print("================================")
+              status = str(
+                  first_value(
+                      job,
+                      "status",
+                      default="open"
+                  )
+              ).lower().strip()
 
-              qualifies = (
-                  payout >= MIN_PAYOUT
-                  and sla >= MIN_SLA
+              payout = as_float(
+                  first_value(
+                      job,
+                      "maxUsdc",
+                      "maxUSDC",
+                      "max_usdc",
+                      default=0
+                  )
               )
 
-              # -------------------------------------------------
-              # JOB DOES NOT PASS BASIC SCREENING
-              # -------------------------------------------------
-              if not qualifies:
-                  print("CHECK: Job does not meet basic screening rules.")
+              sla = as_float(
+                  first_value(
+                      job,
+                      "slaMinutes",
+                      "sla",
+                      "sla_minutes",
+                      default=0
+                  )
+              )
 
-                  telegram(
-                      f"👀 T2000 JOB DETECTED\n\n"
-                      f"Title: {title}\n"
-                      f"Payout: ${payout:.2f} USDC\n"
-                      f"SLA: {sla:.0f} minutes\n"
-                      f"Job ID: {job_id}\n\n"
-                      f"⚠️ This job doesn't meet our basic criteria,\n"
-                      f"but it may be worth checking.\n\n"
-                      f"WildForce Scout detected this job."
+              slots_total = as_int(
+                  first_value(
+                      job,
+                      "slotsTotal",
+                      "slots",
+                      "totalSlots",
+                      default=1
+                  ),
+                  default=1
+              )
+
+              slots_remaining = as_int(
+                  first_value(
+                      job,
+                      "slotsRemaining",
+                      "remainingSlots",
+                      "slotsLeft",
+                      default=slots_total
+                  ),
+                  default=slots_total
+              )
+
+              max_claims = as_int(
+                  first_value(
+                      job,
+                      "maxClaimsPerAgent",
+                      "maxClaims",
+                      "perAgentLimit",
+                      default=1
+                  ),
+                  default=1
+              )
+
+              text = job_text(job)
+
+              print("")
+              print("========================================")
+              print(f"Job: {title}")
+              print(f"ID: {job_id}")
+              print(f"Status: {status}")
+              print(f"Payout: ${payout:.2f}")
+              print(f"SLA: {sla:.0f} minutes")
+              print(f"Slots total: {slots_total}")
+              print(f"Slots remaining: {slots_remaining}")
+              print(
+                  f"Max claims per agent: {max_claims}"
+              )
+              print("========================================")
+
+              # -------------------------------------------------
+              # JOB MUST BE OPEN
+              # -------------------------------------------------
+
+              if status != "open":
+                  print("SKIP: Job is not open.")
+
+                  with open(seen_file, "a") as f:
+                      f.write(job_id + "\n")
+
+                  continue
+
+              # -------------------------------------------------
+              # NEVER CLAIM KNOWN DESK/PROOF BOUNTIES
+              # -------------------------------------------------
+
+              excluded_match = next(
+                  (
+                      phrase
+                      for phrase in EXCLUDED_PHRASES
+                      if phrase in text
+                  ),
+                  None
+              )
+
+              if excluded_match:
+                  print(
+                      "SKIP: Excluded desk/proof job -> "
+                      + excluded_match
                   )
 
                   with open(seen_file, "a") as f:
@@ -140,85 +408,253 @@ jobs:
                   continue
 
               # -------------------------------------------------
-              # JOB PASSES BASIC SCREENING
+              # PAYOUT CHECK
               # -------------------------------------------------
-              print("QUALIFIES: Attempting automatic claim...")
+
+              if payout < MIN_PAYOUT:
+                  print(
+                      f"SKIP: Payout ${payout:.2f} is below "
+                      f"${MIN_PAYOUT:.2f}."
+                  )
+
+                  with open(seen_file, "a") as f:
+                      f.write(job_id + "\n")
+
+                  continue
+
+              # -------------------------------------------------
+              # SLA CHECK
+              # -------------------------------------------------
+
+              if sla < MIN_SLA_MINUTES:
+                  print(
+                      f"SKIP: SLA {sla:.0f} minutes is below "
+                      f"{MIN_SLA_MINUTES} minutes."
+                  )
+
+                  with open(seen_file, "a") as f:
+                      f.write(job_id + "\n")
+
+                  continue
+
+              # -------------------------------------------------
+              # NO REMAINING SLOTS
+              # -------------------------------------------------
+
+              if slots_remaining <= 0:
+                  print("SKIP: No remaining slots.")
+
+                  with open(seen_file, "a") as f:
+                      f.write(job_id + "\n")
+
+                  continue
+
+              # -------------------------------------------------
+              # RESPECT T2000 PER-AGENT LIMIT
+              # -------------------------------------------------
+
+              if max_claims <= 0:
+                  print(
+                      "SKIP: T2000 reports no claims available "
+                      "for this agent."
+                  )
+
+                  with open(seen_file, "a") as f:
+                      f.write(job_id + "\n")
+
+                  continue
+
+              # -------------------------------------------------
+              # CLAIM DECISION
+              # -------------------------------------------------
+              #
+              # Important:
+              #
+              # maxClaimsPerAgent = 1
+              #     -> We can only claim this posting once.
+              #
+              # maxClaimsPerAgent > 1
+              #     -> Multiple claims may be allowed.
+              #
+              # We STILL only claim up to our own
+              # MAX_NEW_CLAIMS_PER_RUN limit.
+              # -------------------------------------------------
+
+              allowed_by_posting = min(
+                  max_claims,
+                  slots_remaining
+              )
+
+              if allowed_by_posting <= 0:
+                  print(
+                      "SKIP: Posting does not allow another "
+                      "claim for this agent."
+                  )
+                  continue
+
+              print("")
+              print("QUALIFIES")
+              print(
+                  f"T2000 allows up to {allowed_by_posting} "
+                  "claim(s) for this posting."
+              )
+              print(
+                  f"Our run limit allows up to "
+                  f"{MAX_NEW_CLAIMS_PER_RUN - successful_claims} "
+                  "more."
+              )
+
+              # -------------------------------------------------
+              # TELEGRAM PRE-CLAIM ALERT
+              # -------------------------------------------------
 
               telegram(
-                  f"🚨 T2000 JOB MATCH\n\n"
+                  "T2000 JOB MATCH\n\n"
+                  f"Agent: ChuksBlades\n"
                   f"Title: {title}\n"
                   f"Payout: ${payout:.2f} USDC\n"
                   f"SLA: {sla:.0f} minutes\n"
                   f"Job ID: {job_id}\n\n"
-                  f"✅ Passed our basic screening.\n"
-                  f"⚡ Attempting to claim immediately.\n\n"
-                  f"WildForce Scout"
+                  f"Slots remaining: {slots_remaining}\n"
+                  f"Max claims per agent: {max_claims}\n\n"
+                  "Passed automatic screening.\n"
+                  "Attempting claim now."
               )
+
+              # -------------------------------------------------
+              # CLAIM
+              # -------------------------------------------------
 
               result = subprocess.run(
-                  ["t2", "job", "claim", job_id],
+                  [
+                      "t2",
+                      "job",
+                      "claim",
+                      "--key",
+                      os.path.expanduser(
+                          "~/.t2000/wallet.key"
+                      ),
+                      job_id
+                  ],
                   text=True,
-                  capture_output=True
+                  capture_output=True,
+                  timeout=60
               )
 
-              print("Claim stdout:")
-              print(result.stdout)
+              stdout = (
+                  result.stdout or ""
+              ).strip()
 
-              print("Claim stderr:")
-              print(result.stderr)
+              stderr = (
+                  result.stderr or ""
+              ).strip()
 
               # -------------------------------------------------
-              # CLAIM SUCCESSFUL
+              # SUCCESS
               # -------------------------------------------------
+
               if result.returncode == 0:
-                  print("CLAIM SUCCESSFUL")
+
+                  successful_claims += 1
+
+                  print(
+                      "CLAIM SUCCESSFUL: ChuksBlades "
+                      f"claimed {job_id}"
+                  )
 
                   telegram(
-                      f"🟢 T2000 JOB CLAIMED\n\n"
+                      "T2000 JOB CLAIMED\n\n"
+                      f"Agent: ChuksBlades\n"
                       f"Title: {title}\n"
                       f"Payout: ${payout:.2f} USDC\n"
                       f"SLA: {sla:.0f} minutes\n"
                       f"Job ID: {job_id}\n\n"
-                      f"✅ Passed our basic screening.\n"
-                      f"⚡ WildForce Scout claimed it automatically.\n\n"
-                      f"⛔ No work has been executed yet."
+                      f"Claim {successful_claims}/"
+                      f"{MAX_NEW_CLAIMS_PER_RUN} "
+                      "for this run.\n\n"
+                      "No work has been executed yet."
                   )
 
+                  # Only mark as seen after successful claim.
+                  with open(seen_file, "a") as f:
+                      f.write(job_id + "\n")
+
+                  # If this posting only permits one claim
+                  # for this agent, move on.
+                  if max_claims == 1:
+                      print(
+                          "This posting has "
+                          "maxClaimsPerAgent=1. "
+                          "No second claim will be attempted."
+                      )
+
+                  # Continue scanning other postings if our
+                  # overall run limit has not been reached.
+                  continue
+
               # -------------------------------------------------
-              # CLAIM FAILED
+              # CLAIM FAILURE
               # -------------------------------------------------
-              else:
-                  print("CLAIM FAILED")
 
-                  error = (result.stderr or result.stdout).strip()
+              print("CLAIM FAILED.")
 
-                  if not error:
-                      error = "Unknown claim error."
+              error = stderr or stdout or "Unknown claim error."
 
-                  telegram(
-                      f"⚠️ T2000 AUTO-CLAIM FAILED\n\n"
-                      f"Title: {title}\n"
-                      f"Payout: ${payout:.2f} USDC\n"
-                      f"SLA: {sla:.0f} minutes\n"
-                      f"Job ID: {job_id}\n\n"
-                      f"❌ The job passed basic screening,\n"
-                      f"but the automatic claim failed.\n\n"
-                      f"Error:\n"
-                      f"{error[:1000]}"
-                  )
+              print("Claim error:")
+              print(error[:2000])
 
-              # Mark the job as seen so we don't repeatedly alert
-              # about the same listing.
-              with open(seen_file, "a") as f:
-                  f.write(job_id + "\n")
+              telegram(
+                  "T2000 AUTO-CLAIM FAILED\n\n"
+                  f"Agent: ChuksBlades\n"
+                  f"Title: {title}\n"
+                  f"Payout: ${payout:.2f} USDC\n"
+                  f"Job ID: {job_id}\n\n"
+                  "The job passed screening, but "
+                  "the claim failed.\n\n"
+                  f"Error:\n{error[:1000]}"
+              )
 
-          if not new_jobs:
-              print("No new jobs.")
+              # IMPORTANT:
+              # Do NOT permanently mark a failed claim as seen.
+              #
+              # A first-come-first-served job can fail because
+              # another agent won the race, or because of a
+              # temporary API problem. Leaving it unseen allows a
+              # future run to reconsider it if it is still open.
+
+          # =====================================================
+          # SUMMARY
+          # =====================================================
+
+          print("")
+          print("========================================")
+          print("HUNTER SUMMARY")
+          print("========================================")
+          print(f"Open jobs: {len(jobs)}")
+          print(f"New unseen jobs: {len(new_jobs)}")
+          print(f"Successful claims: {successful_claims}")
+          print(
+              f"Maximum claims this run: "
+              f"{MAX_NEW_CLAIMS_PER_RUN}"
+          )
+          print("========================================")
 
           PY
 
+      # ---------------------------------------------------------
+      # 6. Save seen-job state
+      # ---------------------------------------------------------
       - name: Save seen jobs
         uses: actions/cache/save@v4
         with:
           path: /tmp/t2000-seen.txt
-          key: t2000-seen-${{ github.run_number }}
+          key: t2000-seen-${{ github.run_id }}
+
+      # ---------------------------------------------------------
+      # 7. Remove wallet from temporary GitHub runner
+      # ---------------------------------------------------------
+      - name: Clean up ChuksBlades wallet
+        if: always()
+        run: |
+          rm -f "$HOME/.t2000/wallet.key"
+          echo "Temporary ChuksBlades wallet removed."
