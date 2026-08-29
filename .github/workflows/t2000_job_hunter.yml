@@ -72,9 +72,7 @@ jobs:
             touch /tmp/t2000-seen.txt
           fi
 
-          t2 --json job board \
-            --key "$HOME/.t2000/wallet.key" \
-            > /tmp/jobs.json
+          t2 --json job board / > /tmp/jobs.json
 
           echo "T2000 board checked successfully."
 
