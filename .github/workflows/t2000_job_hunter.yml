@@ -14,9 +14,11 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      # ---------------------------------------------------------
-      # 1. Install T2000 CLI
-      # ---------------------------------------------------------
+
+      # =========================================================
+      # 1. INSTALL T2000 CLI
+      # =========================================================
+
       - name: Install T2000 CLI
         run: |
           set -euo pipefail
@@ -26,9 +28,11 @@ jobs:
           echo "T2000 CLI version:"
           t2 --version
 
-      # ---------------------------------------------------------
-      # 2. Restore ChuksBlades wallet
-      # ---------------------------------------------------------
+
+      # =========================================================
+      # 2. RESTORE CHUKSBLADES WALLET
+      # =========================================================
+
       - name: Restore ChuksBlades wallet
         env:
           T2000_WALLET_KEY: ${{ secrets.T2000_WALLET_KEY }}
@@ -43,33 +47,59 @@ jobs:
           mkdir -p "$HOME/.t2000"
 
           umask 077
-          printf '%s' "$T2000_WALLET_KEY" > "$HOME/.t2000/wallet.key"
+
+          printf '%s' "$T2000_WALLET_KEY" \
+            > "$HOME/.t2000/wallet.key"
 
           chmod 600 "$HOME/.t2000/wallet.key"
 
           echo "ChuksBlades wallet restored."
-          ls -l "$HOME/.t2000/wallet.key"
 
-      # ---------------------------------------------------------
-      # 3. Restore previously seen jobs
-      # ---------------------------------------------------------
-      - name: Restore ChuksBlades seen jobs
+
+      # =========================================================
+      # 3. VERIFY WALLET WITHOUT MAKING A TRANSACTION
+      # =========================================================
+
+      - name: Verify ChuksBlades wallet
+        run: |
+          set -euo pipefail
+
+          echo "Checking ChuksBlades wallet..."
+
+          t2 status
+
+          echo "Wallet verification completed."
+
+
+      # =========================================================
+      # 4. RESTORE HUNTER STATE
+      # =========================================================
+
+      - name: Restore ChuksBlades hunter state
         uses: actions/cache/restore@v4
         with:
-          path: /tmp/t2000-seen.txt
+          path: |
+            /tmp/t2000-seen.txt
+            /tmp/t2000-claimed-titles.txt
           key: chuksblades-seen-${{ github.run_id }}
           restore-keys: |
             chuksblades-seen-
 
-      # ---------------------------------------------------------
-      # 4. Check the live T2000 board
-      # ---------------------------------------------------------
+
+      # =========================================================
+      # 5. CHECK LIVE T2000 BOARD
+      # =========================================================
+
       - name: Check T2000 jobs
         run: |
           set -euo pipefail
 
           if [ ! -f /tmp/t2000-seen.txt ]; then
             touch /tmp/t2000-seen.txt
+          fi
+
+          if [ ! -f /tmp/t2000-claimed-titles.txt ]; then
+            touch /tmp/t2000-claimed-titles.txt
           fi
 
           t2 --json job board / > /tmp/jobs.json
@@ -87,23 +117,28 @@ jobs:
           print(f"Open jobs on board: {len(jobs)}")
           PY
 
-      # ---------------------------------------------------------
-      # 5. Screen and automatically claim jobs
-      # ---------------------------------------------------------
+
+      # =========================================================
+      # 6. SCREEN AND AUTO-CLAIM QUALIFYING JOBS
+      # =========================================================
+
       - name: Find and auto-claim qualifying jobs
         id: claim
         env:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+
         run: |
           set -euo pipefail
 
           python - <<'PY'
           import json
           import os
+          import re
           import subprocess
           import urllib.parse
           import urllib.request
+
 
           # =====================================================
           # CHUKSBLADES HUNTER SETTINGS
@@ -112,33 +147,284 @@ jobs:
           # Minimum acceptable payout.
           MIN_PAYOUT = 0.05
 
-          # Avoid extremely short jobs where there is little
-          # realistic time to understand and complete the work.
+          # Avoid extremely short jobs.
           MIN_SLA_MINUTES = 30
 
-          # Our own anti-greed limit.
+          # VERY IMPORTANT:
           #
-          # Even when T2000 allows 20 or 40 claims, ChuksBlades
-          # will take at most this many NEW jobs in one workflow.
-          MAX_NEW_CLAIMS_PER_RUN = 3
+          # Only ONE successful claim is allowed per workflow run.
+          #
+          # After one successful claim, the hunter stops immediately.
+          MAX_NEW_CLAIMS_PER_RUN = 1
 
-          # Never automatically claim these known desk/proof/
-          # engagement-style bounties.
-          EXCLUDED_PHRASES = [
-              "refer a new agent",
-              "seller path",
-              "job loop",
-              "social comment",
-              "metrics",
-              "pack",
-              "board pulse",
-              "connect smoke",
-              "honest friction",
-              "storefront",
-              "skills",
-              "complete one full buyer loop",
-              "buyer loop",
+
+          # =====================================================
+          # HARD EXCLUSION RULES
+          # =====================================================
+          #
+          # These are jobs we do NOT want to claim automatically.
+          #
+          # The rules focus on actions rather than words such as
+          # "token" appearing somewhere in a description.
+          #
+          # This prevents innocent jobs mentioning crypto/token
+          # from being rejected unnecessarily.
+          #
+
+          HARD_EXCLUSION_RULES = [
+
+              # -------------------------------------------------
+              # SWAPS
+              # -------------------------------------------------
+
+              (
+                  "swap / token exchange",
+                  [
+                      "swap",
+                      "swapping",
+                      "swap to",
+                      "swap into",
+                      "swap→",
+                  ]
+              ),
+
+              # -------------------------------------------------
+              # BURN / DESTROY / SINK
+              # -------------------------------------------------
+
+              (
+                  "burn / destroy / sink",
+                  [
+                      "burn",
+                      "burning",
+                      "destroy token",
+                      "destroy asset",
+                      "destroying token",
+                      "destroying asset",
+                      "sink token",
+                      "sink asset",
+                      "sink",
+                  ]
+              ),
+
+              # -------------------------------------------------
+              # BUY / PURCHASE
+              # -------------------------------------------------
+
+              (
+                  "buy / purchase",
+                  [
+                      "buy token",
+                      "buy tokens",
+                      "buy coin",
+                      "buy coins",
+                      "buy asset",
+                      "buy assets",
+                      "buy nft",
+                      "buy an nft",
+                      "buy item",
+                      "purchase token",
+                      "purchase tokens",
+                      "purchase coin",
+                      "purchase coins",
+                      "purchase asset",
+                      "purchase assets",
+                      "purchase nft",
+                      "purchase an nft",
+                  ]
+              ),
+
+              # -------------------------------------------------
+              # SELL
+              # -------------------------------------------------
+
+              (
+                  "selling",
+                  [
+                      "sell token",
+                      "sell tokens",
+                      "sell coin",
+                      "sell coins",
+                      "sell asset",
+                      "sell assets",
+                      "sell nft",
+                      "sell an nft",
+                  ]
+              ),
+
+              # -------------------------------------------------
+              # FINANCIAL SPENDING
+              # -------------------------------------------------
+
+              (
+                  "spending / funding",
+                  [
+                      "spend usdc",
+                      "spend sui",
+                      "spend funds",
+                      "spending usdc",
+                      "spending sui",
+                      "spending funds",
+                      "fund wallet",
+                      "fund the wallet",
+                      "fund account",
+                      "fund the account",
+                      "fund a wallet",
+                      "fund an account",
+                      "funding wallet",
+                      "funding account",
+                      "pay a fee",
+                      "pay the fee",
+                      "pay gas",
+                      "pay for",
+                      "payment required",
+                      "payment of",
+                  ]
+              ),
+
+              # -------------------------------------------------
+              # DEPOSIT / WITHDRAW
+              # -------------------------------------------------
+
+              (
+                  "deposit / withdrawal",
+                  [
+                      "deposit",
+                      "deposit funds",
+                      "deposit usdc",
+                      "deposit sui",
+                      "withdraw",
+                      "withdrawal",
+                      "withdraw funds",
+                      "withdraw usdc",
+                      "withdraw sui",
+                  ]
+              ),
+
+              # -------------------------------------------------
+              # TRANSFERS / SENDING FUNDS
+              # -------------------------------------------------
+
+              (
+                  "wallet transfer / sending funds",
+                  [
+                      "send usdc",
+                      "send sui",
+                      "send funds",
+                      "send tokens",
+                      "send crypto",
+                      "send payment",
+                      "transfer usdc",
+                      "transfer sui",
+                      "transfer funds",
+                      "transfer tokens",
+                      "transfer crypto",
+                      "transfer payment",
+                      "transferring usdc",
+                      "transferring sui",
+                      "transferring funds",
+                      "transferring tokens",
+                  ]
+              ),
+
+              # -------------------------------------------------
+              # WALLET / PASSPORT TRANSACTIONS
+              # -------------------------------------------------
+
+              (
+                  "wallet / Passport transaction",
+                  [
+                      "passport connect",
+                      "passport transaction",
+                      "passport transaction",
+                      "connect wallet",
+                      "wallet connect",
+                      "connect your wallet",
+                      "connect the wallet",
+                      "sign transaction",
+                      "sign a transaction",
+                      "sign the transaction",
+                      "sign on-chain transaction",
+                      "approve transaction",
+                      "approve a transaction",
+                      "approve the transaction",
+                      "on-chain transaction",
+                      "on chain transaction",
+                      "blockchain transaction",
+                      "execute transaction",
+                      "execute a transaction",
+                      "submit transaction",
+                      "submit a transaction",
+                  ]
+              ),
+
+              # -------------------------------------------------
+              # REFERRALS / RECRUITMENT
+              # -------------------------------------------------
+
+              (
+                  "referral / recruitment",
+                  [
+                      "refer an agent",
+                      "refer a new agent",
+                      "refer another agent",
+                      "refer someone",
+                      "referral",
+                      "referrals",
+                      "recruit an agent",
+                      "recruit another agent",
+                      "recruiting",
+                      "invite an agent",
+                      "invite another agent",
+                      "invite someone",
+                      "invitation",
+                      "bring another agent",
+                      "bring a new agent",
+                  ]
+              ),
+
+              # -------------------------------------------------
+              # MINTING
+              # -------------------------------------------------
+
+              (
+                  "mint / asset creation",
+                  [
+                      "mint nft",
+                      "mint an nft",
+                      "mint token",
+                      "mint tokens",
+                      "mint asset",
+                      "mint an asset",
+                      "minting nft",
+                      "minting token",
+                      "minting tokens",
+                  ]
+              ),
+
+              # -------------------------------------------------
+              # KNOWN DESK / PROOF / ENGAGEMENT JOBS
+              # -------------------------------------------------
+
+              (
+                  "known desk / proof job",
+                  [
+                      "seller path",
+                      "job loop",
+                      "social comment",
+                      "metrics",
+                      "pack",
+                      "board pulse",
+                      "connect smoke",
+                      "honest friction",
+                      "storefront",
+                      "skills",
+                      "complete one full buyer loop",
+                      "buyer loop",
+                  ]
+              ),
           ]
+
 
           # =====================================================
           # LOAD BOARD
@@ -149,7 +435,14 @@ jobs:
 
           jobs = data.get("openJobs", [])
 
+
+          # =====================================================
+          # STATE FILES
+          # =====================================================
+
           seen_file = "/tmp/t2000-seen.txt"
+          claimed_titles_file = "/tmp/t2000-claimed-titles.txt"
+
 
           with open(seen_file, "r") as f:
               seen = {
@@ -157,6 +450,15 @@ jobs:
                   for line in f
                   if line.strip()
               }
+
+
+          with open(claimed_titles_file, "r") as f:
+              claimed_titles = {
+                  line.strip()
+                  for line in f
+                  if line.strip()
+              }
+
 
           # =====================================================
           # TELEGRAM
@@ -187,11 +489,13 @@ jobs:
                       data=payload,
                       timeout=15
                   ).read()
+
               except Exception as exc:
                   print(
                       "Telegram notification failed:",
                       str(exc)
                   )
+
 
           # =====================================================
           # HELPERS
@@ -201,19 +505,25 @@ jobs:
               for key in keys:
                   if key in job and job[key] is not None:
                       return job[key]
+
               return default
+
 
           def as_float(value, default=0.0):
               try:
                   return float(value)
+
               except (TypeError, ValueError):
                   return default
+
 
           def as_int(value, default=0):
               try:
                   return int(float(value))
+
               except (TypeError, ValueError):
                   return default
+
 
           def job_text(job):
               pieces = []
@@ -225,12 +535,59 @@ jobs:
                   "brief",
                   "preview"
               ]:
+
                   value = job.get(key)
 
                   if value is not None:
                       pieces.append(str(value))
 
               return " ".join(pieces).lower()
+
+
+          def normalize_title(title):
+              """
+              Converts a job title into a stable comparison key.
+
+              Example:
+
+              "Write a Report - SUI"
+              "write a report sui"
+
+              become approximately the same key.
+              """
+
+              value = title.lower()
+
+              value = re.sub(
+                  r"[^a-z0-9]+",
+                  " ",
+                  value
+              )
+
+              value = re.sub(
+                  r"\s+",
+                  " ",
+                  value
+              )
+
+              return value.strip()
+
+
+          def append_seen(job_id):
+              if job_id not in seen:
+                  with open(seen_file, "a") as f:
+                      f.write(job_id + "\n")
+
+                  seen.add(job_id)
+
+
+          def append_claimed_title(title_key):
+              if title_key not in claimed_titles:
+                  with open(claimed_titles_file, "a") as f:
+                      f.write(title_key + "\n")
+
+                  claimed_titles.add(title_key)
+
 
           # =====================================================
           # FIND NEW JOBS
@@ -239,6 +596,7 @@ jobs:
           new_jobs = []
 
           for job in jobs:
+
               job_id = str(
                   first_value(
                       job,
@@ -255,8 +613,10 @@ jobs:
               if job_id not in seen:
                   new_jobs.append(job)
 
+
           print(f"Open jobs: {len(jobs)}")
           print(f"New unseen jobs: {len(new_jobs)}")
+
 
           # =====================================================
           # PROCESS JOBS
@@ -264,15 +624,29 @@ jobs:
 
           successful_claims = 0
 
+
           for job in new_jobs:
 
-              # Stop once our own workload limit is reached.
+              # -------------------------------------------------
+              # ABSOLUTE ONE-CLAIM LIMIT
+              # -------------------------------------------------
+
               if successful_claims >= MAX_NEW_CLAIMS_PER_RUN:
+
                   print(
-                      "Our claim limit for this run has been "
-                      "reached."
+                      "One successful claim has already been made."
                   )
+
+                  print(
+                      "Stopping hunter immediately."
+                  )
+
                   break
+
+
+              # -------------------------------------------------
+              # BASIC JOB INFORMATION
+              # -------------------------------------------------
 
               job_id = str(
                   first_value(
@@ -284,6 +658,7 @@ jobs:
                   )
               ).strip()
 
+
               title = str(
                   first_value(
                       job,
@@ -292,6 +667,7 @@ jobs:
                   )
               ).strip()
 
+
               status = str(
                   first_value(
                       job,
@@ -299,6 +675,7 @@ jobs:
                       default="open"
                   )
               ).lower().strip()
+
 
               payout = as_float(
                   first_value(
@@ -310,6 +687,7 @@ jobs:
                   )
               )
 
+
               sla = as_float(
                   first_value(
                       job,
@@ -319,6 +697,7 @@ jobs:
                       default=0
                   )
               )
+
 
               slots_total = as_int(
                   first_value(
@@ -331,6 +710,7 @@ jobs:
                   default=1
               )
 
+
               slots_remaining = as_int(
                   first_value(
                       job,
@@ -341,6 +721,7 @@ jobs:
                   ),
                   default=slots_total
               )
+
 
               max_claims = as_int(
                   first_value(
@@ -353,7 +734,15 @@ jobs:
                   default=1
               )
 
+
               text = job_text(job)
+
+              title_key = normalize_title(title)
+
+
+              # -------------------------------------------------
+              # PRINT JOB
+              # -------------------------------------------------
 
               print("")
               print("========================================")
@@ -364,131 +753,183 @@ jobs:
               print(f"SLA: {sla:.0f} minutes")
               print(f"Slots total: {slots_total}")
               print(f"Slots remaining: {slots_remaining}")
-              print(
-                  f"Max claims per agent: {max_claims}"
-              )
+              print(f"Max claims per agent: {max_claims}")
               print("========================================")
 
-              # -------------------------------------------------
+
+              # =================================================
               # JOB MUST BE OPEN
-              # -------------------------------------------------
+              # =================================================
 
               if status != "open":
-                  print("SKIP: Job is not open.")
 
-                  with open(seen_file, "a") as f:
-                      f.write(job_id + "\n")
-
-                  continue
-
-              # -------------------------------------------------
-              # NEVER CLAIM KNOWN DESK/PROOF BOUNTIES
-              # -------------------------------------------------
-
-              excluded_match = next(
-                  (
-                      phrase
-                      for phrase in EXCLUDED_PHRASES
-                      if phrase in text
-                  ),
-                  None
-              )
-
-              if excluded_match:
                   print(
-                      "SKIP: Excluded desk/proof job -> "
-                      + excluded_match
+                      "SKIP: Job is not open."
                   )
 
-                  with open(seen_file, "a") as f:
-                      f.write(job_id + "\n")
+                  append_seen(job_id)
 
                   continue
 
-              # -------------------------------------------------
+
+              # =================================================
+              # DUPLICATE TITLE PROTECTION
+              # =================================================
+              #
+              # If we already claimed a job with the same
+              # normalized title, do not claim another one.
+              #
+
+              if title_key in claimed_titles:
+
+                  print(
+                      "SKIP: A job with the same normalized "
+                      "title has already been claimed."
+                  )
+
+                  append_seen(job_id)
+
+                  continue
+
+
+              # =================================================
+              # HARD EXCLUSION CHECK
+              # =================================================
+
+              exclusion_reason = None
+              exclusion_match = None
+
+
+              for reason, phrases in HARD_EXCLUSION_RULES:
+
+                  for phrase in phrases:
+
+                      if phrase in text:
+
+                          exclusion_reason = reason
+                          exclusion_match = phrase
+
+                          break
+
+                  if exclusion_reason:
+                      break
+
+
+              if exclusion_reason:
+
+                  print(
+                      "SKIP: Hard exclusion."
+                  )
+
+                  print(
+                      f"Reason: {exclusion_reason}"
+                  )
+
+                  print(
+                      f"Matched: {exclusion_match}"
+                  )
+
+                  # Mark rejected jobs as seen so they do not
+                  # repeatedly trigger the same decision.
+                  append_seen(job_id)
+
+                  # IMPORTANT:
+                  # No Telegram message is sent for hard rejects.
+                  #
+                  # This prevents Telegram spam from unsuitable
+                  # jobs such as swaps, burns and referrals.
+
+                  continue
+
+
+              # =================================================
               # PAYOUT CHECK
-              # -------------------------------------------------
+              # =================================================
 
               if payout < MIN_PAYOUT:
+
                   print(
                       f"SKIP: Payout ${payout:.2f} is below "
                       f"${MIN_PAYOUT:.2f}."
                   )
 
-                  with open(seen_file, "a") as f:
-                      f.write(job_id + "\n")
+                  append_seen(job_id)
 
                   continue
 
-              # -------------------------------------------------
+
+              # =================================================
               # SLA CHECK
-              # -------------------------------------------------
+              # =================================================
 
               if sla < MIN_SLA_MINUTES:
+
                   print(
                       f"SKIP: SLA {sla:.0f} minutes is below "
                       f"{MIN_SLA_MINUTES} minutes."
                   )
 
-                  with open(seen_file, "a") as f:
-                      f.write(job_id + "\n")
+                  append_seen(job_id)
 
                   continue
 
-              # -------------------------------------------------
-              # NO REMAINING SLOTS
-              # -------------------------------------------------
+
+              # =================================================
+              # SLOT CHECK
+              # =================================================
 
               if slots_remaining <= 0:
-                  print("SKIP: No remaining slots.")
 
-                  with open(seen_file, "a") as f:
-                      f.write(job_id + "\n")
+                  print(
+                      "SKIP: No remaining slots."
+                  )
+
+                  append_seen(job_id)
 
                   continue
 
-              # -------------------------------------------------
-              # RESPECT T2000 PER-AGENT LIMIT
-              # -------------------------------------------------
+
+              # =================================================
+              # T2000 PER-AGENT LIMIT CHECK
+              # =================================================
 
               if max_claims <= 0:
+
                   print(
                       "SKIP: T2000 reports no claims available "
                       "for this agent."
                   )
 
-                  with open(seen_file, "a") as f:
-                      f.write(job_id + "\n")
+                  append_seen(job_id)
 
                   continue
 
-              # -------------------------------------------------
-              # CLAIM DECISION
-              # -------------------------------------------------
-              #
-              # Important:
-              #
-              # maxClaimsPerAgent = 1
-              #     -> We can only claim this posting once.
-              #
-              # maxClaimsPerAgent > 1
-              #     -> Multiple claims may be allowed.
-              #
-              # We STILL only claim up to our own
-              # MAX_NEW_CLAIMS_PER_RUN limit.
-              # -------------------------------------------------
+
+              # =================================================
+              # CLAIM ELIGIBILITY
+              # =================================================
 
               allowed_by_posting = min(
                   max_claims,
                   slots_remaining
               )
 
+
               if allowed_by_posting <= 0:
+
                   print(
                       "SKIP: Posting does not allow another "
                       "claim for this agent."
                   )
+
+                  append_seen(job_id)
+
                   continue
+
+
+              # =================================================
+              # QUALIFIED
+              # =================================================
 
               print("")
               print("QUALIFIES")
@@ -497,18 +938,18 @@ jobs:
                   "claim(s) for this posting."
               )
               print(
-                  f"Our run limit allows up to "
-                  f"{MAX_NEW_CLAIMS_PER_RUN - successful_claims} "
-                  "more."
+                  "Our hunter allows exactly ONE successful "
+                  "claim per workflow run."
               )
 
-              # -------------------------------------------------
+
+              # =================================================
               # TELEGRAM PRE-CLAIM ALERT
-              # -------------------------------------------------
+              # =================================================
 
               telegram(
                   "T2000 JOB MATCH\n\n"
-                  f"Agent: ChuksBlades\n"
+                  "Agent: ChuksBlades\n"
                   f"Title: {title}\n"
                   f"Payout: ${payout:.2f} USDC\n"
                   f"SLA: {sla:.0f} minutes\n"
@@ -519,9 +960,10 @@ jobs:
                   "Attempting claim now."
               )
 
-              # -------------------------------------------------
+
+              # =================================================
               # CLAIM
-              # -------------------------------------------------
+              # =================================================
 
               result = subprocess.run(
                   [
@@ -539,71 +981,179 @@ jobs:
                   timeout=60
               )
 
+
               stdout = (
                   result.stdout or ""
               ).strip()
+
 
               stderr = (
                   result.stderr or ""
               ).strip()
 
-              # -------------------------------------------------
-              # SUCCESS
-              # -------------------------------------------------
+
+              # =================================================
+              # SUCCESSFUL CLAIM
+              # =================================================
 
               if result.returncode == 0:
 
                   successful_claims += 1
 
+
+                  print("")
                   print(
-                      "CLAIM SUCCESSFUL: ChuksBlades "
-                      f"claimed {job_id}"
+                      "CLAIM SUCCESSFUL: "
+                      f"ChuksBlades claimed {job_id}"
                   )
+
+
+                  # Mark exact job as seen.
+                  append_seen(job_id)
+
+
+                  # Remember the normalized title.
+                  append_claimed_title(title_key)
+
 
                   telegram(
                       "T2000 JOB CLAIMED\n\n"
-                      f"Agent: ChuksBlades\n"
+                      "Agent: ChuksBlades\n"
                       f"Title: {title}\n"
                       f"Payout: ${payout:.2f} USDC\n"
                       f"SLA: {sla:.0f} minutes\n"
                       f"Job ID: {job_id}\n\n"
-                      f"Claim {successful_claims}/"
-                      f"{MAX_NEW_CLAIMS_PER_RUN} "
-                      "for this run.\n\n"
+                      "Claim 1/1 for this run.\n\n"
                       "No work has been executed yet."
                   )
 
-                  # Only mark as seen after successful claim.
-                  with open(seen_file, "a") as f:
-                      f.write(job_id + "\n")
 
-                  # If this posting only permits one claim
-                  # for this agent, move on.
-                  if max_claims == 1:
-                      print(
-                          "This posting has "
-                          "maxClaimsPerAgent=1. "
-                          "No second claim will be attempted."
-                      )
+                  # =================================================
+                  # CRITICAL STOP
+                  # =================================================
+                  #
+                  # Claiming does NOT authorize execution.
+                  #
+                  # The automation MUST NOT:
+                  #
+                  # - open/execute the job
+                  # - perform the requested work
+                  # - submit work
+                  # - deliver work
+                  # - settle
+                  # - reject
+                  # - refund
+                  # - post
+                  # - make another claim
+                  # - spend additional funds
+                  #
+                  # It stops here.
+                  #
 
-                  # Continue scanning other postings if our
-                  # overall run limit has not been reached.
-                  continue
+                  print("")
+                  print("========================================")
+                  print("CLAIM LIMIT REACHED")
+                  print("========================================")
+                  print(
+                      "One job successfully claimed."
+                  )
+                  print(
+                      "Stopping before any job execution."
+                  )
+                  print(
+                      "No delivery or settlement will be attempted."
+                  )
+                  print("========================================")
 
-              # -------------------------------------------------
+
+                  break
+
+
+              # =================================================
               # CLAIM FAILURE
-              # -------------------------------------------------
+              # =================================================
 
+              print("")
               print("CLAIM FAILED.")
 
-              error = stderr or stdout or "Unknown claim error."
+
+              error = (
+                  stderr
+                  or stdout
+                  or "Unknown claim error."
+              )
+
 
               print("Claim error:")
               print(error[:2000])
 
+
+              # =================================================
+              # WALLET ERROR DETECTION
+              # =================================================
+              #
+              # If the wallet is invalid, there is no reason to
+              # continue trying other jobs during the same run.
+              #
+
+              wallet_error_markers = [
+
+                  "not a valid v4 wallet",
+                  "no wallet found",
+                  "wallet file",
+                  "invalid wallet",
+                  "wallet key",
+                  "failed to load wallet",
+                  "unable to load wallet",
+              ]
+
+
+              if any(
+                  marker in error.lower()
+                  for marker in wallet_error_markers
+              ):
+
+                  telegram(
+                      "T2000 WALLET ERROR\n\n"
+                      "Agent: ChuksBlades\n"
+                      f"Job ID: {job_id}\n\n"
+                      "The job passed screening, but the "
+                      "wallet could not be used.\n\n"
+                      f"Error:\n{error[:1000]}\n\n"
+                      "Hunter stopped before attempting "
+                      "another claim."
+                  )
+
+
+                  print("")
+                  print(
+                      "CRITICAL: Wallet/configuration error."
+                  )
+                  print(
+                      "Stopping hunter to prevent repeated "
+                      "claim failures."
+                  )
+
+
+                  raise SystemExit(1)
+
+
+              # =================================================
+              # NORMAL CLAIM FAILURE
+              # =================================================
+              #
+              # Do NOT mark the job as seen.
+              #
+              # It may have been claimed by another agent,
+              # or the API may have experienced a temporary
+              # failure.
+              #
+              # Future workflow runs can reconsider it.
+              #
+
               telegram(
                   "T2000 AUTO-CLAIM FAILED\n\n"
-                  f"Agent: ChuksBlades\n"
+                  "Agent: ChuksBlades\n"
                   f"Title: {title}\n"
                   f"Payout: ${payout:.2f} USDC\n"
                   f"Job ID: {job_id}\n\n"
@@ -612,16 +1162,9 @@ jobs:
                   f"Error:\n{error[:1000]}"
               )
 
-              # IMPORTANT:
-              # Do NOT permanently mark a failed claim as seen.
-              #
-              # A first-come-first-served job can fail because
-              # another agent won the race, or because of a
-              # temporary API problem. Leaving it unseen allows a
-              # future run to reconsider it if it is still open.
 
           # =====================================================
-          # SUMMARY
+          # FINAL SUMMARY
           # =====================================================
 
           print("")
@@ -639,18 +1182,24 @@ jobs:
 
           PY
 
-      # ---------------------------------------------------------
-      # 6. Save seen-job state
-      # ---------------------------------------------------------
-      - name: Save ChuksBlades seen jobs
+
+      # =========================================================
+      # 7. SAVE HUNTER STATE
+      # =========================================================
+
+      - name: Save ChuksBlades hunter state
         uses: actions/cache/save@v4
         with:
-          path: /tmp/t2000-seen.txt
+          path: |
+            /tmp/t2000-seen.txt
+            /tmp/t2000-claimed-titles.txt
           key: chuksblades-seen-${{ github.run_id }}
 
-      # ---------------------------------------------------------
-      # 7. Remove wallet from temporary GitHub runner
-      # ---------------------------------------------------------
+
+      # =========================================================
+      # 8. REMOVE WALLET FROM TEMPORARY GITHUB RUNNER
+      # =========================================================
+
       - name: Clean up ChuksBlades wallet
         if: always()
         run: |
